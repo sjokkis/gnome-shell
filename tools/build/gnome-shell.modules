@@ -9,6 +9,8 @@
       href="git://git.gnome.org/"/>
   <repository type="git" name="git.moblin.org"
       href="git://git.moblin.org"/>
+  <repository type="git" name="git.collabora.co.uk"
+      href="git://git.collabora.co.uk/git/"/>
 
   <autotools id="gobject-introspection">
     <branch repo="git.gnome.org" module="gobject-introspection"/>
@@ -96,6 +98,13 @@
     </after>
   </autotools>
 
+  <autotools id="telepathy-glib">
+    <branch repo="git.collabora.co.uk" module="telepathy-glib"/>
+    <dependencies>
+      <dep package="gobject-introspection"/>
+    </dependencies>
+  </autotools>
+
   <autotools id="gnome-shell">
     <branch repo="git.gnome.org" module="gnome-shell"/>
     <dependencies>
@@ -103,6 +112,7 @@
         <dep package="mutter"/>
         <dep package="gjs"/>
         <dep package="gconf"/>
+        <dep package="telepathy-glib"/>
     </dependencies>
   </autotools>
 
