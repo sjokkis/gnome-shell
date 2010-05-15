@@ -8,6 +8,8 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gtk/gtk.h>
 
+#include <telepathy-glib/contact.h>
+
 G_BEGIN_DECLS
 
 typedef struct _ShellGlobal      ShellGlobal;
@@ -116,6 +118,20 @@ void shell_global_run_at_leisure (ShellGlobal         *global,
                                   ShellLeisureFunction func,
                                   gpointer             user_data,
                                   GDestroyNotify       notify);
+
+typedef void (*GetTpContactsCb) (TpConnection *connection,
+                                 GList *contacts,
+                                 TpHandle *failed);
+
+void shell_global_get_tp_contacts (TpConnection *self,
+                                   guint n_handles,
+                                   const TpHandle *handles,
+                                   guint n_features,
+                                   const TpContactFeature *features,
+                                   GetTpContactsCb callback,
+                                   gpointer user_data,
+                                   GDestroyNotify destroy,
+                                   GObject *weak_object);
 
 G_END_DECLS
 
