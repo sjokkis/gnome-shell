@@ -5,6 +5,7 @@
 #include "shell-global-private.h"
 #include "shell-perf-log.h"
 #include "shell-wm.h"
+#include "shell-global.h"
 
 #include "display.h"
 #include "util.h"
@@ -1603,4 +1604,73 @@ shell_global_run_at_leisure (ShellGlobal         *global,
 
   if (global->work_count == 0)
     schedule_leisure_functions (global);
+}
+
+/**
+ * GetTpContactsCb:
+ * @connection: The connection
+ * @contacts: (element-type TelepathyGLib.Contact): List of contacts
+ * @failed: Array of failed contacts
+ */
+
+/**
+ * shell_global_get_tp_contacts_cb: (skip)
+ */
+
+static void
+shell_global_get_tp_contacts_cb (TpConnection *self,
+                                 guint n_contacts,
+                                 TpContact * const *contacts,
+                                 guint n_failed,
+                                 const TpHandle *failed,
+                                 const GError *error,
+                                 gpointer callback,
+                                 GObject *weak_object)
+{
+    int i;
+    GList *contact_list = NULL;
+    for(i = 0; i < n_contacts; i++) {
+        contact_list = g_list_append(contact_list, contacts[i]);
+    }
+
+    TpHandle* failed_list = g_new0 (TpHandle, n_failed+1);
+    memcpy(failed_list, failed, n_failed);
+    
+    ((GetTpContactsCb)callback)(self, contact_list, failed_list);
+}
+
+
+/**
+ * shell_global_get_tp_contacts:
+ * @self: A connection, which must be ready
+ * @n_handles: Number of handles in handles
+ * @handles: (array length=n_handles) (element-type uint): Array of handles
+ * @n_features: Number of features in features
+ * @features: (array length=n_features) (allow-none) (element-type uint):
+ *  Array of features
+ * @callback: User callback to run when the contacts are ready
+ * @user_data: User data
+ * @destroy: Called to destroy user_data
+ * @weak_object: (allow-none): An object passed to the callback
+ *
+ * Wrap tp_connection_get_contacts_by_handle so we can transform the array
+ * into a null-terminated one, which gjs can handle
+ * We send the original callback to get_contacts_by_handle as
+ * user_data, and we have our own function as callback, which does the
+ * transforming. 
+ */
+void
+shell_global_get_tp_contacts (TpConnection *self,
+                              guint n_handles,
+                              const TpHandle *handles,
+                              guint n_features,
+                              const TpContactFeature *features,
+                              GetTpContactsCb callback,
+                              gpointer user_data,
+                              GDestroyNotify destroy,
+                              GObject *weak_object)
+{
+    tp_connection_get_contacts_by_handle(self, n_handles, handles, 
+            n_features, features, shell_global_get_tp_contacts_cb, 
+            callback, NULL, NULL);
 }

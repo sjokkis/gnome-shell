@@ -60,6 +60,7 @@ GOBJECT_INTROSPECTION_MIN_VERSION=0.6.11
 GJS_MIN_VERSION=0.7
 MUTTER_MIN_VERSION=2.31.2
 GTK_MIN_VERSION=2.18.0
+TELEPATHY_GLIB_MIN_VERSION=0.11.5
 
 # Collect more than 20 libraries for a prize!
 PKG_CHECK_MODULES(MUTTER_PLUGIN, gio-unix-2.0 dbus-glib-1
@@ -71,7 +72,8 @@ PKG_CHECK_MODULES(MUTTER_PLUGIN, gio-unix-2.0 dbus-glib-1
 				 clutter-x11-1.0 >= $CLUTTER_MIN_VERSION
 				 clutter-glx-1.0 >= $CLUTTER_MIN_VERSION
                                  libstartup-notification-1.0
-                                 gobject-introspection-1.0 >= $GOBJECT_INTROSPECTION_MIN_VERSION)
+                                 gobject-introspection-1.0 >= $GOBJECT_INTROSPECTION_MIN_VERSION
+                                 telepathy-glib >= $TELEPATHY_GLIB_MIN_VERSION)
 
 # This is for the newly added application id bits, we can replace this with
 # a version check later
