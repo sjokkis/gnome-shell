@@ -59,6 +59,33 @@ Client.prototype = {
         } catch (e) {
             throw new Error("Couldn't register SimpleObserver. Error: \n" + e);
         }
+
+        this.approver = Tp.SimpleApprover.new(dbus, "GnomeShell", true,
+                Lang.bind(this, this.ApproveChannels));
+
+        // We only care about single-user text-based chats
+        this.approver.add_approver_filter({
+            'org.freedesktop.Telepathy.Channel.ChannelType': Tp.IFACE_CHANNEL_TYPE_TEXT,
+            'org.freedesktop.Telepathy.Channel.TargetHandleType': Tp.HandleType.CONTACT,
+        });
+
+        try {
+            this.approver.register();
+        } catch (e) {
+            throw new Error("Couldn't register SimpleApprover. Error: \n" + e);
+        }
+    },
+
+    ApproveChannels: function(approver, account, conn, channels,
+                              dispatch_op, context, user_data) {
+        print("\nApproveChannels:");
+        print(approver);
+        print(account);
+        print(conn);
+        print("Channels: ");
+        for(let i in channels) {
+            print("\t" + channels[i]);
+        }
     },
 
     ObserveChannels: function(observer, account, conn, channels,
