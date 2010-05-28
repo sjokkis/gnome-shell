@@ -185,6 +185,7 @@ Source.prototype = {
     createIcon: function(size) {
         let iconBox = new St.Bin({ style_class: 'avatar-box' });
         iconBox._size = size;
+        iconBox.connect('notify::hover', function(){ print("hover"); });
         let textureCache = St.TextureCache.get_default();
 
         let file = this._contact.get_avatar_file();
