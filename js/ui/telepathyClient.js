@@ -141,18 +141,21 @@ Source.prototype = {
     _init: function(account, conn, contact, chan) {
         this._account = account;
         this._conn = conn;
-        this._chan = chan;
         this._contact = contact;
+        this._chan = chan;
 
         chan._invalidatedId = chan.connect('invalidated', Lang.bind(this, this._removeChannel));
 
-        this._channelText = new Telepathy.ChannelText(DBus.session, conn.get_bus_name(), chan.get_object_path());
-        this._channelText._receivedId = this._channelText.connect('Received', Lang.bind(this, this._messageReceived));
-        this._channelText.ListPendingMessagesRemote(false, Lang.bind(this, this._gotPendingMessages));
+        chan._channelText = new Telepathy.ChannelText(DBus.session, conn.get_bus_name(), chan.get_object_path());
+        chan._channelText._receivedId = chan._channelText.connect('Received', Lang.bind(this, this._messageReceived));
+        chan._channelText.ListPendingMessagesRemote(false, Lang.bind(this, this._gotPendingMessages));
 
         MessageTray.Source.prototype._init.call(this, contact.get_identifier());
 
         this._ensureNotification();
+    },
+
+    addChannel: function(chan) {
     },
 
     createIcon: function(size) {
@@ -186,7 +189,7 @@ Source.prototype = {
     },
 
     respond: function(text) {
-        this._channelText.SendRemote(Tp.ChannelTextMessageType.NORMAL, text);
+        this.chan._channelText.SendRemote(Tp.ChannelTextMessageType.NORMAL, text);
     },
 
     _gotChannelRequest: function (chanReqPath, ex) {
@@ -209,7 +212,7 @@ Source.prototype = {
 
     _removeChannel: function(chan) {
         chan.disconnect(chan._invalidatedId);
-        this._channelText.disconnect(this._channelText._receivedId);
+        this.chan._channelText.disconnect(this.chan._channelText._receivedId);
 
         this._removeSource();
     },
