@@ -15,7 +15,12 @@ const Main = imports.ui.main;
 const MessageTray = imports.ui.messageTray;
 const Telepathy = imports.misc.telepathy;
 
-let channelDispatcher;
+let channelDispatcher = null;
+
+let contact_features = [Tp.ContactFeature.ALIAS, 
+                        Tp.ContactFeature.AVATAR_DATA, 
+                        Tp.ContactFeature.PRESENCE]
+let contact_features_len = contact_features.length
 
 // See Notification.appendMessage
 const SCROLLBACK_RECENT_TIME = 15 * 60; // 15 minutes
@@ -33,7 +38,6 @@ function Client() {
 
 Client.prototype = {
     _init : function() {
-        this._connections = {};
         this._sources = {};
 
         channelDispatcher = new Telepathy.ChannelDispatcher(DBus.session,
@@ -66,35 +70,35 @@ Client.prototype = {
         let connPath = conn.get_object_path();
         let connName = conn.get_bus_name();
 
-        if(!this._connections[connPath]) {
-            this._connections[connPath] = conn;
-
-            conn.invalidatedId = conn.connect('invalidated', Lang.bind(this, this._removeConnection, conn));
-
-            conn.connectionPresence = new Telepathy.ConnectionSimplePresence(DBus.session, connName, connPath);
-            conn.presenceChangedId = conn.connectionPresence.connect(
-                'PresencesChanged', Lang.bind(this, this._presencesChanged));
-        }
-
         for (let i in channels) {
             let chan = channels[i];
             let [targetHandle, targetHandleType] = chan.get_handle();
 
-            if (this._sources[connPath + ':' + targetHandle]) {
+            if (this._sources[chan.get_object_path()]) {
                 continue;
             }
 
             Shell.Global.get_tp_contacts(
                     conn,
                     1, [targetHandle],
-                    2, [Tp.ContactFeature.ALIAS, Tp.ContactFeature.AVATAR_DATA],
+                    contact_features_len, contact_features,
                     Lang.bind(this, 
                         function(connection, contacts, failed) {
                             let contact = contacts[0];
+                            let chanType = chan.get_channel_type();
+                            let source = null;
 
-                            let source = new Source(account, conn, contact, chan);
+                            switch(chanType)
+                            {
+                            case Tp.IFACE_CHANNEL_TYPE_TEXT:
+                                source = new TextSource(account, conn, chan, contact);
+                                break;
+                            default:
+                                return;
+                            }
+
                             source._destroyId = source.connect('destroy', Lang.bind(this, this._removeSource));
-                            this._sources[source.object_path] = source;
+                            this._sources[chan.get_object_path()] = source;
                         }), null);
         }
  
@@ -102,27 +106,8 @@ Client.prototype = {
         context.accept();
     },
 
-    // Presence of a contact has changed.
-    _presencesChanged: function(proxy, presences, err) {
-        let connPath = proxy.getPath();
-
-        for (let handle in presences) {
-            let source = this._sources[connPath + ':' + handle];
-            if(source) {
-                source.changePresence(presences[handle]);
-            }
-        }
-    },
-
-    _removeConnection: function(conn) {
-        conn.connectionPresence.disconnect(conn.presenceChangedId);
-        delete this._connections[conn.get_object_path];
-    },
-
     _removeSource: function(source) {
-        source.disconnect(source._destroyId);
         delete this._sources[source.object_path];
-        return;
     },
 
     get Interfaces() {
@@ -131,28 +116,30 @@ Client.prototype = {
 };
 
 
-function Source(account, conn, contact, chan) {
-    this._init(account, conn, contact, chan);
-}
+function Source(account, conn, chan, contact) {
+    this._init(account, conn, chan, contact);
+};
 
 Source.prototype = {
-    __proto__:  MessageTray.Source.prototype,
+    __proto__: MessageTray.Source.prototype,
 
-    _init: function(account, conn, contact, chan) {
+    _init: function(account, conn, chan, contact) {
+        MessageTray.Source.prototype._init.call(this, chan.get_object_path());
+
         this._account = account;
         this._conn = conn;
         this._chan = chan;
         this._contact = contact;
+        this._notification = null;
+        this._title = contact.get_alias();
 
         chan._invalidatedId = chan.connect('invalidated', Lang.bind(this, this._removeChannel));
+        contact._presenceChangedId = contact.connect('presence-changed', Lang.bind(this, this._presenceChanged));
 
-        this._channelText = new Telepathy.ChannelText(DBus.session, conn.get_bus_name(), chan.get_object_path());
-        this._channelText._receivedId = this._channelText.connect('Received', Lang.bind(this, this._messageReceived));
-        this._channelText.ListPendingMessagesRemote(false, Lang.bind(this, this._gotPendingMessages));
-
-        MessageTray.Source.prototype._init.call(this, contact.get_identifier());
-
-        this._ensureNotification();
+        // create notification and set title
+        this._presenceChanged(contact, contact.get_presence_type(),
+                contact.get_presence_status(),
+                contact.get_presence_message());
     },
 
     createIcon: function(size) {
@@ -161,7 +148,7 @@ Source.prototype = {
         let textureCache = St.TextureCache.get_default();
 
         let file = this._contact.get_avatar_file();
-        if(file) {
+        if (file) {
             let uri = file.get_uri();
             iconBox.child = textureCache.load_uri_sync(St.TextureCachePolicy.FOREVER,
                                                        uri, size, size)
@@ -172,21 +159,45 @@ Source.prototype = {
         return iconBox;
     },
 
-    clicked: function() {
-        let handle = this._contact.get_handle();
-        channelDispatcher.EnsureChannelRemote(this._account.get_object_path(),
-                                              { 'org.freedesktop.Telepathy.Channel.ChannelType': Tp.IFACE_CHANNEL_TYPE_TEXT,
-                                                'org.freedesktop.Telepathy.Channel.TargetHandle': handle,
-                                                'org.freedesktop.Telepathy.Channel.TargetHandleType': Tp.HandleType.CONTACT },
-                                              global.get_current_time(),
-                                              '',
-                                              Lang.bind(this, this._gotChannelRequest));
+    _presenceChanged: function(contact, type, status, message) {
+        let name = contact.get_alias();
+        let title;
 
-        MessageTray.Source.prototype.clicked.call(this);
+        switch(type) {
+            case Tp.ConnectionPresenceType.AVAILABLE:
+                title = _("%s").format(name);
+                break;
+            case Tp.ConnectionPresenceType.AWAY:
+                title = _("%s (away)").format(name);
+                break;
+            case Tp.ConnectionPresenceType.EXTENDED_AWAY:
+                title = _("%s (away)").format(name);
+                break;
+            case Tp.ConnectionPresenceType.HIDDEN:
+                title = _("%s (hidden)").format(name);
+                break;
+            case Tp.ConnectionPresenceType.BUSY:
+                title = _("%s (busy)").format(name);
+                break;
+            case Tp.ConnectionPresenceType.OFFLINE:
+                title = _("%s (offline)").format(name);
+                break;
+            default:
+                // Unrecognized presence type. Abort without changing anything
+                print("unrecognized type");
+                return;
+        }
+
+        if (message !== "") {
+            title += ' <i>(' + GLib.markup_escape_text(message, -1) + ')</i>';
+        }
+
+        this._title = title;
+        this._ensureNotification();
+        this._notification.update(title);
     },
 
-    respond: function(text) {
-        this._channelText.SendRemote(Tp.ChannelTextMessageType.NORMAL, text);
+    _ensureNotification: function() {
     },
 
     _gotChannelRequest: function (chanReqPath, ex) {
@@ -199,33 +210,87 @@ Source.prototype = {
         chanReq.ProceedRemote();
     },
 
+    _removeChannel: function(chan) {
+        chan.disconnect(chan._invalidatedId);
+
+        this._removeSource();
+    },
+
+    _removeSource: function() {
+        this._contact.disconnect(this._contact._presenceChangedId);
+        this.destroy();
+    },
+
+    get account() {
+        return this._account;
+    },
+
+    get connection() {
+        return this._conn;
+    },
+
+    get channel() {
+        return this._chan;
+    },
+
+    get contact() {
+        return this._contact;
+    },
+
+    get object_path() {
+        return this._chan.get_object_path()
+    },
+};
+
+
+function TextSource(account, conn, chan, contact) {
+    this._init(account, conn, chan, contact);
+};
+
+TextSource.prototype = {
+    __proto__: Source.prototype,
+    
+    _init: function(account, conn, chan, contact) {
+        Source.prototype._init.call(this, account, conn, chan, contact);
+
+        this._channelText = new Telepathy.ChannelText(DBus.session, conn.get_bus_name(), chan.get_object_path());
+        this._channelText._receivedId = this._channelText.connect('Received', Lang.bind(this, this._messageReceived));
+        this._channelText.ListPendingMessagesRemote(false, Lang.bind(this, this._gotPendingMessages));
+    },
+
+    clicked: function() {
+        channelDispatcher.EnsureChannelRemote(this._account.get_object_path(),
+                                              { 'org.freedesktop.Telepathy.Channel.ChannelType': Tp.IFACE_CHANNEL_TYPE_TEXT,
+                                                'org.freedesktop.Telepathy.Channel.TargetHandle': this._contact.get_handle(),
+                                                'org.freedesktop.Telepathy.Channel.TargetHandleType': Tp.HandleType.CONTACT },
+                                              global.get_current_time(),
+                                              '',
+                                              Lang.bind(this, this._gotChannelRequest));
+
+        MessageTray.Source.prototype.clicked.call(this);
+    },
+
+    respond: function(text) {
+        this._channelText.SendRemote(Tp.ChannelTextMessageType.NORMAL, text);
+    },
+             
+    _ensureNotification: function() {
+        if (!Main.messageTray.contains(this))
+            Main.messageTray.add(this);
+
+        if (!this._notification) {
+            let id = this._chan.get_object_path();
+
+            this._notification = new TextNotification(id, this, this._title);
+        }
+    },
+
     _gotPendingMessages: function(msgs, err) {
         if (!msgs)
             return;
 
         for (let i = 0; i < msgs.length; i++)
             this._messageReceived.apply(this, [this._chan].concat(msgs[i]));
-    },
-
-    _removeChannel: function(chan) {
-        chan.disconnect(chan._invalidatedId);
-        this._channelText.disconnect(this._channelText._receivedId);
-
-        this._removeSource();
-    },
-
-    _removeSource: function() {
-        this.destroy();
-    },
-
-    _ensureNotification: function() {
-        if (!Main.messageTray.contains(this))
-            Main.messageTray.add(this);
-
-        if (!this._notification) {
-            let id = this._contact.get_identifier();
-            this._notification = new Notification(id, this);
-        }
     },
 
     _messageReceived: function(channel, id, timestamp, sender,
@@ -235,61 +300,26 @@ Source.prototype = {
         this.notify(this._notification);
     },
 
-    changePresence: function(presence) {
-        let [type, status, status_message] = presence;
-        let msg;
+    _removeChannel: function(chan) {
+        chan.disconnect(chan._invalidatedId);
+        this._channelText.disconnect(this._channelText._receivedId);
 
-        switch(type) {
-            case Tp.ConnectionPresenceType.AVAILABLE:
-                msg = _("%s is online").format(this.name);
-                break;
-            case Tp.ConnectionPresenceType.AWAY:
-                msg = _("%s is away").format(this.name);
-                break;
-            case Tp.ConnectionPresenceType.EXTENDED_AWAY:
-                msg = _("%s is away").format(this.name);
-                break;
-            case Tp.ConnectionPresenceType.HIDDEN:
-                msg = _("%s is hidden").format(this.name);
-                break;
-            case Tp.ConnectionPresenceType.BUSY:
-                msg = _("%s is busy").format(this.name);
-                break;
-            case Tp.ConnectionPresenceType.OFFLINE:
-                msg = _("%s is offline").format(this.name);
-                break;
-            default:
-                // Unrecognized presence type. shouldn't ever happen.
-                msg = null;
-        }
-
-        if (status_message !== "")
-            msg += ' <i>(' + GLib.markup_escape_text(status_message, -1) + ')</i>';
-
-        this._ensureNotification();
-        this._notification.appendMessage(msg, true);
-        this.notify(this._notification);
-    },
-
-    get name() {
-        return this._contact.get_alias();
-    },
-    
-    get object_path() {
-        return this._conn.get_object_path() + ':' + this._contact.get_handle()
+        this._removeSource();
     },
 };
 
 
-function Notification(id, source) {
-    this._init(id, source);
+function TextNotification(id, source, title) {
+    this._init(id, source, title);
 }
 
-Notification.prototype = {
-    __proto__:  MessageTray.Notification.prototype,
+TextNotification.prototype = {
+    __proto__: MessageTray.Notification.prototype,
 
-    _init: function(id, source) {
-        MessageTray.Notification.prototype._init.call(this, id, source, source.name);
+    _init: function(id, source, title) {
+        MessageTray.Notification.prototype._init.call(this, id, source, title);
+        this._title = title;
+
         this.actor.connect('button-press-event', Lang.bind(this, this._onButtonPress));
 
         this._responseEntry = new St.Entry({ style_class: 'chat-response' });
@@ -304,7 +334,7 @@ Notification.prototype = {
         if (asTitle)
             this.update(text);
         else
-            this.update(this.source.name, text);
+            this.update(this._title, text);
         this._append(text, 'chat-received');
     },
 
