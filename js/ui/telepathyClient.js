@@ -4,6 +4,7 @@ const Clutter = imports.gi.Clutter;
 const DBus = imports.dbus;
 const GLib = imports.gi.GLib;
 const Lang = imports.lang;
+const Pango = imports.gi.Pango;
 const Shell = imports.gi.Shell;
 const Signals = imports.signals;
 const St = imports.gi.St;
@@ -14,8 +15,10 @@ const Tp = imports.gi.TelepathyGLib;
 const Main = imports.ui.main;
 const MessageTray = imports.ui.messageTray;
 const Telepathy = imports.misc.telepathy;
+const Tweener = imports.ui.tweener;
 
 let channelDispatcher = null;
+let missedCalls = null;
 
 let contact_features = [Tp.ContactFeature.ALIAS, 
                         Tp.ContactFeature.AVATAR_DATA, 
@@ -26,6 +29,9 @@ let contact_features_len = contact_features.length
 const SCROLLBACK_RECENT_TIME = 15 * 60; // 15 minutes
 const SCROLLBACK_RECENT_LENGTH = 20;
 const SCROLLBACK_IDLE_LENGTH = 5;
+
+// Fade time for entries in the missed calls notification
+const CALL_FADE_TIME = 0.5;
 
 // This is GNOME Shell's implementation of the Telepathy 'Client'
 // interface. Specifically, the shell is a Telepathy 'Observer', which
@@ -52,9 +58,15 @@ Client.prototype = {
         this.observer = Tp.SimpleObserver.new(dbus, true, "GnomeShell", true,
                 Lang.bind(this, this.ObserveChannels));
 
-        // We only care about single-user text-based chats
+        // Single-user text-based chats
         this.observer.add_observer_filter({
             'org.freedesktop.Telepathy.Channel.ChannelType': Tp.IFACE_CHANNEL_TYPE_TEXT,
+            'org.freedesktop.Telepathy.Channel.TargetHandleType': Tp.HandleType.CONTACT,
+        });
+
+        // Single-user audio/video chats
+        this.observer.add_observer_filter({
+            'org.freedesktop.Telepathy.Channel.ChannelType': Tp.IFACE_CHANNEL_TYPE_STREAMED_MEDIA,
             'org.freedesktop.Telepathy.Channel.TargetHandleType': Tp.HandleType.CONTACT,
         });
 
@@ -93,6 +105,10 @@ Client.prototype = {
                             case Tp.IFACE_CHANNEL_TYPE_TEXT:
                                 source = new TextSource(account, conn, chan, contact);
                                 break;
+                            case Tp.IFACE_CHANNEL_TYPE_STREAMED_MEDIA:
+                                source = new AVSource(account, conn, chan, contact);
+                                source._missedId = source.connect('missed', Lang.bind(this, this._callMissed));
+                                break;
                             default:
                                 return;
                             }
@@ -104,6 +120,20 @@ Client.prototype = {
  
         // Allow dbus method to return
         context.accept();
+    },
+
+    _callMissed: function(source) {
+        // create source if necessary
+        if (!missedCalls) {
+            missedCalls = new MissedCallsSource();
+            missedCalls._destroyId = missedCalls.connect('destroy', Lang.bind(this, this._removeMissedCalls));
+        }
+
+        missedCalls.addCall(source.contact);
+    },
+
+    _removeMissedCalls: function() {
+        missedCalls = null;
     },
 
     _removeSource: function(source) {
@@ -423,4 +453,197 @@ TextNotification.prototype = {
             Main.messageTray.unlock();
         }
     }
+};
+
+
+function AVSource(account, conn, chan, contact) {
+    this._init(account, conn, chan, contact);
+};
+
+AVSource.prototype = {
+    __proto__: Source.prototype,
+
+    _init: function(account, conn, chan, contact) {
+        Source.prototype._init.call(this, account, conn, chan, contact);
+
+        this.notify(this._notification);
+    },
+
+    clicked: function() {
+        this._removeSource();
+        MessageTray.Source.prototype.clicked.call(this);
+    },
+
+    createIcon: function(size) {
+        let iconBox = new St.Bin({ style_class: 'avatar-box' });
+        iconBox._size = size;
+        let textureCache = St.TextureCache.get_default();
+        iconBox.child = textureCache.load_icon_name('call-start', iconBox._size);
+
+        return iconBox;
+    },
+
+    _ensureNotification: function() {
+        if (!Main.messageTray.contains(this))
+            Main.messageTray.add(this);
+
+        if (!this._notification) {
+            let id = this._chan.get_object_path();
+            let title = this._contact.get_alias();
+
+            this._notification = new MessageTray.Notification(id, this, title, "Incoming call");
+        }
+    },
+
+    _removeChannel: function(chan) {
+        chan.disconnect(chan._invalidatedId);
+        this._removeSource();
+    },
+
+    _removeSource: function() {
+        this.emit('missed');
+        this.destroy();
+    },
+};
+
+
+function MissedCallsSource() {
+    this._init();
+}
+
+MissedCallsSource.prototype = {
+    __proto__: MessageTray.Source.prototype,
+
+    _init: function() {
+        MessageTray.Source.prototype._init.call(this, "MissedCallsSource");
+
+        this._ensureNotification();
+    },
+
+    addCall: function(contact) {
+        let time = new Date();
+
+        this._ensureNotification();
+        this._notification.addCall(time, contact);
+        this.notify(this._notification);
+    },
+
+    clicked: function() {
+        this._removeSource();
+        MessageTray.Source.prototype.clicked.call(this);
+    },
+
+    createIcon: function(size) {
+        let iconBox = new St.Bin({ style_class: 'avatar-box' });
+        iconBox._size = size;
+        let textureCache = St.TextureCache.get_default();
+        iconBox.child = textureCache.load_icon_name('appointment-missed', iconBox._size);
+
+        return iconBox;
+    },
+    
+    _ensureNotification: function() {
+        if (!Main.messageTray.contains(this))
+            Main.messageTray.add(this);
+
+        if (!this._notification) {
+            this._notification = new MissedCallsNotification("MissedCallsList", this, "Missed calls");
+            this._notification._destroyId = this._notification.connect(
+                    'destroy', Lang.bind(this, this._removeNotification));
+        }
+    },
+    
+    _removeNotification: function() {
+        this._removeSource();
+    },
+
+    _removeSource: function() {
+        this.destroy();
+    },
+};
+
+function MissedCallsNotification(id, source, title) {
+    this._init(id, source, title);
+}
+
+MissedCallsNotification.prototype = {
+    __proto__: MessageTray.Notification.prototype,
+     
+    _init: function(id, source, title) {
+        MessageTray.Notification.prototype._init.call(this, id, source, title);
+        this._calls = [];
+    },
+
+    addCall: function(time, contact) {
+        let formatted_time = time.getHours() + ":" + time.getMinutes();
+        let text = "[" + formatted_time + "] " + contact.get_alias();
+
+        let id = contact.get_identifier();
+        let count = 1;
+
+        let len = this._calls.length;
+        for (let i = 0; i < len; i++) {
+            if (this._calls[i]._contactId == id) {
+                count = this._cals[i].callCount;
+            }
+        }
+
+        if (count > 1) {
+            text += " (" + count + ")";
+        }
+
+        let callBox = new St.BoxLayout({ style_class: 'call-entry',
+                                         reactive: true,
+                                         track_hover: true });
+        callBox.connect('notify::hover', Lang.bind(this, function(box) {this._callHover(box, close)} ));
+
+        let call = new St.Button({ style_class: 'call-entry item',
+                                   label: text,
+                                   x_align: St.Align.START });
+        this._calls.push(call);
+
+        let close = new St.Button({ style_class: 'call-entry close' });
+        close.hide();
+        close.connect('clicked', Lang.bind(this, function() { this._removeCall(call) }));
+
+        let closeBin = new St.Bin({ reactive: true });
+        closeBin.child = close;
+
+        callBox.add(call);
+        callBox.add(closeBin);
+
+        this.addActor(callBox);
+    },
+
+    _callHover: function(box, close) {
+        if (box.hover) {
+            print("hover on");
+            close.opacity = 0;
+            close.show();
+            Tweener.addTween(close,
+                             { opacity: 255,
+                               time: CALL_FADE_TIME,
+                               transition: 'easeInQuad'});
+        } else {
+            print("hover off");
+            Tweener.addTween(close,
+                             { opacity: 0,
+                               time: CALL_FADE_TIME,
+                               transition: 'easeOutQuad',
+                               onComplete: function() { close.hide() }});
+        }
+    },
+
+    _removeCall: function(call) {
+        // if this is the only call in the list, remove the list
+        if (this._calls && this._calls.length == 1) {
+            this.destroy();
+            return;
+        }
+
+        //remove call from array
+        this._calls.splice(this._calls.indexOf(call), 1);
+        call.parent.destroy();
+        call.destroy();
+    },
 };

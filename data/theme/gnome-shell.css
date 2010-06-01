@@ -864,6 +864,24 @@ StTooltip {
     background: #808080;
 }
 
+.call-entry {
+}
+
+.call-entry.item { 
+    border: 1px solid #243040;
+    border-radius: 4px;
+    min-width: 15em;
+    padding: 2px 2px 6px 6px;
+}
+
+.call-entry.close {
+    background-image: url("close-window.svg");
+    width: 24px;
+    height: 24px;
+    padding-left: 40px;
+    -st-shadow: -2px 2px 6px rgba(0,0,0,0.5);
+}
+
 .chat-received {
     background-gradient-direction: horizontal;
     background-gradient-start: #606060;
